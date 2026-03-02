@@ -75,7 +75,7 @@ def build_laplacian_matrix_symm(h, w):
                 data.append(val)
 
     n = h * w
-    return coo_matrix((data, (rows, cols)), shape=(n, n), dtype=np.float32).tocsr()
+    return coo_matrix((data, (rows, cols)), shape=(n, n), dtype=np.float64).tocsr()
 
 # Source
 # https://github.com/hanyoseob/matlab-CG?tab=readme-ov-file
@@ -84,20 +84,29 @@ def conjgrad(A, b, x, tol=1e-10, max_iters=500):
     if max_iters is None:
         max_iters = len(b)
 
+    b = b.astype(np.float64, copy=False)
+    x = x.astype(np.float64, copy=False)
+
     r = b - A @ x
+    r = r - np.mean(r)
     p = r.copy()
     rsold = float(r @ r)
 
     for i in range(max_iters):
         Ap = A @ p
         denom = float(p @ Ap)
-        if abs(denom) < 1e-20:
+        if abs(denom) < 1e-14:
             print(f"CG stopped early at iter {i}: denominator near zero.")
             break
 
         alpha = rsold / denom
+        if not np.isfinite(alpha):
+            print(f"CG stopped early at iter {i}: non-finite alpha.")
+            break
+
         x = x + alpha * p
         r = r - alpha * Ap
+        r = r - np.mean(r)
         rsnew = float(r @ r)
 
         if np.sqrt(rsnew) < tol:
@@ -105,9 +114,15 @@ def conjgrad(A, b, x, tol=1e-10, max_iters=500):
             break
 
         p = r + (rsnew / rsold) * p
+        p = p - np.mean(p)
         rsold = rsnew
-        if i % 100 == 0 or i == max_iters - 1:
-            print(i)
+
+        if i % 500 == 0 or i == max_iters - 1:
+            reshaped_x = x.reshape(H, W)
+            plt.figure()
+            plt.imshow(np.clip(reshaped_x, 0, 255), cmap='gray')
+            plt.axis("off")
+            plt.savefig(f"reconstructed_c_{i}.png", dpi=300, bbox_inches="tight")
 
     return x
 
@@ -126,10 +141,14 @@ plt.savefig("result_from_matrix.png", dpi=300, bbox_inches="tight")
 # Inverse (solve A x = y) using conjugate gradient
 b_vec = result.astype(np.float32).reshape(-1)
 x0 = np.zeros_like(b_vec, dtype=np.float32)
-x_cg = conjgrad(A, b_vec, x0, tol=1e-8, max_iters=20000)
+x_cg = conjgrad(
+    A,
+    b_vec,
+    x0,
+    tol=1e-8,
+    max_iters=10000,
+)
 
-# Laplacian has constant-offset ambiguity; align means for comparison/visualization.
-x_cg += float(np.mean(img_gray) - np.mean(x_cg))
 x_cg_img = x_cg.reshape(H, W)
 
 plt.figure()
@@ -139,5 +158,5 @@ plt.savefig("reconstructed_cg.png", dpi=300, bbox_inches="tight")
 
 rec_mae = np.mean(np.abs(x_cg_img - img_gray.astype(np.float32)))
 res_norm = np.linalg.norm((A @ x_cg) - b_vec)
-print(f"CG reconstruction MAE (mean-aligned): {rec_mae:.6f}")
+print(f"CG reconstruction MAE (no mean alignment): {rec_mae:.6f}")
 print(f"CG residual norm ||Ax-b||: {res_norm:.6e}")
